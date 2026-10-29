@@ -1,0 +1,90 @@
+# pnpm's documentation says that with --no-bail "all tasks will finish".
+# Each package's test script writes a marker file, so a marker exists only if that script really ran.
+# `lib` fails, `app` depends on `lib`, `free` is independent.
+# A red job means the documented sentence is false for that pnpm version because a task did not run.
+name: no-bail
+
+on:
+  push:
+    paths:
+      - .github/workflows/no-bail.yml
+      - pnpm-workspace.yaml
+      - package.json
+      - app/**
+      - free/**
+      - lib/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  no-bail:
+    name: pnpm ${{ matrix.version }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 12.16.1
+            url: https://github.com/pnpm/pnpm/releases/download/v12.16.1/pnpm-linux-x64.tar.gz
+            sha256: 565ff81174a14f6f7bd5d84c1b17e51031a80230d370a1fe24be5d16bd02a825
+            layout: tarball
+          - version: 12.14.0
+            url: https://github.com/pnpm/pnpm/releases/download/v12.14.0/pnpm-linux-x64.tar.gz
+            sha256: 3910c3852136bed5bc1511b9137a45fd4357ed6b3970d9d08893641e9005867e
+            layout: tarball
+          - version: 11.28.9
+            url: https://github.com/pnpm/pnpm/releases/download/v11.28.9/pnpm-linux-x64.tar.gz
+            sha256: 44588952c6e0e2c25f5b3363c5736d7a176ce8dc6200ae8179bd688e60a212a7
+            layout: tarball
+          - version: 10.34.9
+            url: https://github.com/pnpm/pnpm/releases/download/v10.34.9/pnpm-linux-x64
+            sha256: 3ec79240658f0ee4e8977f21ee2c598c7a8b8d06b86dc564f2ec6cb099fd8ac2
+            layout: executable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm ${{ matrix.version }} from its release, checked against a pinned checksum
+        env:
+          URL: ${{ matrix.url }}
+          SHA256: ${{ matrix.sha256 }}
+          LAYOUT: ${{ matrix.layout }}
+        run: |
+          mkdir "$RUNNER_TEMP/pnpm"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/download" "$URL"
+          echo "$SHA256  $RUNNER_TEMP/download" | sha256sum --check
+          if [ "$LAYOUT" = tarball ]; then
+            tar --extract --gzip --file "$RUNNER_TEMP/download" --directory "$RUNNER_TEMP/pnpm"
+          else
+            install --mode 0755 "$RUNNER_TEMP/download" "$RUNNER_TEMP/pnpm/pnpm"
+          fi
+          echo "$RUNNER_TEMP/pnpm" >> "$GITHUB_PATH"
+
+      - name: Version
+        run: pnpm --version
+
+      - name: Install the workspace
+        run: pnpm install --offline
+
+      - name: Run pnpm -r --no-bail run test, which is expected to fail because lib fails
+        run: |
+          pnpm -r --no-bail run test > output.txt 2>&1 || echo "pnpm exited with code $?"
+          cat output.txt
+
+      - name: Which tasks ran
+        if: always()
+        run: |
+          for name in lib app free; do
+            if [ -e "ran-$name" ]; then echo "$name: ran"; else echo "$name: did not run"; fi
+          done
+
+      - name: Documented sentence, every task finished
+        run: |
+          missing=0
+          for name in lib app free; do
+            if [ ! -e "ran-$name" ]; then echo "$name did not run"; missing=1; fi
+          done
+          test "$missing" = 0
